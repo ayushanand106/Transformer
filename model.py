@@ -125,3 +125,65 @@ class ResidualConnection(nn.Module):
         
     def forward(self,x,sublayer):
         return x+ self.dropout(sublayer(self.norm(x)))
+    
+    
+class EncoderBlock(nn.Module):
+    def __init__(self, self_attention:MultiHeadAttentionBlock, feed_forward:FeedForwardBlock,dropout:float) -> None:
+        super().__init__()
+        self.self_attention=self_attention
+        self.feed_forward=feed_forward
+        self.residual_connection=nn.ModuleList([ResidualConnection(dropout) for _ in range(2)])
+        
+    def forward(self,x,src_mask):
+        x=self.residual_connection[0](x, lambda X:self.self_attention(x,x,x,src_mask))
+        x=self.residual_connection[1](x, lambda X:self.feed_forward(x))
+        return x
+    
+
+class Encoder(nn.Module):
+    def __init__(self,layer:nn.ModuleList) -> None:
+        super().__init__()
+        self.layer=layer
+        self.norm=LayerNormalization()
+        
+    def forward(self,x,mask):
+        for layer in self.layer:
+            x=layer(x,mask)
+        return self.norm(x)
+        
+        
+class DecoderBlock(nn.Module):
+    def __init__(self,self_attention:MultiHeadAttentionBlock,cross_attention:MultiHeadAttentionBlock,feed_forward,dropout:float) -> None:
+        super().__init__()
+        self.masked_self_attention=self_attention
+        self.cross_attention=cross_attention
+        self.feed_forward=feed_forward
+        self.residual_connections=nn.ModuleList([ResidualConnection(dropout) for _ in range(3)])
+        
+    def forward(self,x, encoder_output, src_mask ,tgt_mask):
+        x=self.residual_connections[0](x,lambda x:self.masked_self_attention(x,x,x,tgt_mask))
+        x=self.residual_connections[1](x,lambda x:self.cross_attention(x,encoder_output,encoder_output,src_mask))
+        x=self.residual_connections[2](x,self.feed_forward(x))
+        return x
+    
+class Decoder(nn.Module):
+    def __init__(self,layer:nn.ModuleList) -> None:
+        super().__init__()
+        self.layer=layer
+        self.norm=LayerNormalization()
+        
+    def forward(self,x,encoder_output,src_mask,tgt_mask):
+        for layer in self.layer:
+            x=layer(x,encoder_output,src_mask,tgt_mask)
+        return self.norm(x)
+        
+class Projection_layer(nn.Module):
+    def __init__(self,d_model:int,vocab_size:int):
+        super().__init__()
+        self.d_model=d_model
+        self.vocab_size=vocab_size
+        self.linear=nn.Linear(d_model,vocab_size)
+    
+    def forward(self,x):
+        #(batch,seq_len,d_model)->(batch,seq_len,vocab_size)
+        return torch.log_softmax(self.linear(x),dim=-1)

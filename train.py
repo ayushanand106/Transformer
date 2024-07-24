@@ -3,15 +3,19 @@ import torch.nn as nn
 
 from dataset import BillingualDataset
 from model import build_transformer
+from config import get_config,get_weights_file_path
  
 from torch.utils.data import DataLoader,Dataset,random_split
-from datasets import load_datasets
+from datasets import load_dataset
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
 
 from pathlib import Path
+
+from torch.utils.tensorboard import SummaryWriter
+import tqdm
  
 def get_all_sentences(ds,lang):
      for item in ds:
@@ -30,7 +34,7 @@ def get_or_build_tokenizer(config,ds,lang):
     return tokenizer
 
 def get_ds(config):
-    ds_raw=load_datasets('opus_books',f"{config["lang_src"]-config["lang_tgt"]}",split='train')
+    ds_raw=load_dataset('opus_books',f"{config['lang_src']}-{config['lang_tgt']}",split='train')
     
     #Build tokenizer
     tokenizer_src=get_or_build_tokenizer(config,ds_raw,config["lang_src"])
@@ -65,4 +69,35 @@ def train_model(config):
     device="cuda"
     Path(config["model_folder"]).mkdir(parent=True,exist_ok=True)
     train_dataloader,val_dataloader,tokenizer_src,tokenizer_tgt=get_ds(config)
-    model=get_model(config,tokenizer_src.get_vocab_size(),,tokenizer_tgt.get_vocab_size())
+    model=get_model(config,tokenizer_src.get_vocab_size(),tokenizer_tgt.get_vocab_size()).to(device)
+    
+    #Tensorboard
+    writer=SummaryWriter(config["experiment_name"])
+    
+    optimiser=torch.optim.Adam(model.parameters(),lr=config["lr"],eps=1e-9)
+    
+    initial_epoch=0
+    global_step=0
+    
+    if config["preload"]:
+        model_filename=get_weights_file_path(config,config["preload"])
+        print(f"Preloading model: {model_filename}")
+        state=torch.load(model_filename)
+        initial_epoch=state["epoch"]+1
+        optimiser.load_state_dict(state["optimizer_state_dict"])
+        global_step=state["global_step"]
+        
+    loss_fn=nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id("[PAD]"),label_smoothing=0.1).to(device)
+    
+    for epoch in range(initial_epoch,config["num_epochs"]):
+        model.train()
+        batch_iterator=tqdm(train_dataloader,desc=f"Processing epoch {epoch}")
+        for batch in batch_iterator:
+            
+            encoder_input=batch['encoder_input'].to(device) #(batch,seq_len)
+            decoder_input=batch['decoder_input'].to(device) #(batch,seq_len)
+            encoder_mask=batch['encoder_mask'].to(device)  #(batch,1,1,seq_len)
+            decoder_mask=batch['decoder_mask'].to(device)  #(batch,1,seq_len,seq_len)
+            
+            encoder_output=model.encode(encoder_input,encoder_mask)
+            decoder_output=model.decode(encoder_output,encoder_mask,decoder_mask)

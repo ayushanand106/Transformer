@@ -88,9 +88,9 @@ class MultiHeadAttentionBlock(nn.Module):
         
         
     @staticmethod # this makes function to be called without creating instance of class
-    def attention(query,key,value,mask,dropout: nn.Dropout):
+    def attention(self,query,key,value,mask,dropout: nn.Dropout):
         #(batch,h,seq_len,d_k)->(batch,h,seq_len,seq_len)
-        attention_score=(query@key.transpose(-2,-1))/math.sqrt(d_k)
+        attention_score=(query@key.transpose(-2,-1))/math.sqrt(self.d_k)
         if mask is not None:
             attention_score.mask_filled(mask==0,-1e9)
         attention_score=attention_score.softmax(dim=-1)
@@ -187,3 +187,69 @@ class Projection_layer(nn.Module):
     def forward(self,x):
         #(batch,seq_len,d_model)->(batch,seq_len,vocab_size)
         return torch.log_softmax(self.linear(x),dim=-1)
+    
+class Transformer(nn.Module):
+    def __init__(self, encoder:Encoder ,decoder:Decoder, src_embed:InputEmbedding , tgt_embed:InputEmbedding,src_pos:PositionalEncoding,tgt_pos:PositionalEncoding,projection_layer:Projection_layer) -> None:
+        super().__init__()
+        self.encoder=encoder
+        self.decoder=decoder
+        self.tgt_embed=tgt_embed
+        self.src_embed=src_embed
+        self.src_pos=src_pos
+        self.tgt_embed=tgt_pos
+        self.proj_layer=projection_layer
+    
+    def encode(self,src,src_mask):
+        src=self.src_embed(src)
+        src=self.src_pos(src)
+        return self.encoder(src,src_mask)
+    
+    def decode(self,encoder_output,src_mask,tgt,tgt_mask):
+        tgt=self.tgt_embed(tgt)
+        tgt=self.tgt_pos(tgt)   
+        return self.decoder(tgt,encoder_output,src_mask,tgt_mask)
+    
+    def project(self,x):
+        return self.proj_layer(x)
+    
+    
+
+def build_transformer(self,src_vocab_size:int,tgt_vocab_size:int,src_seq_len:int,tgt_seq_len:int,d_model:int=512, N:int=6, h:int=8,dropout:int=0.1,d_ff=2048):
+    #Creating Embeddings
+    src_embed=InputEmbedding(d_model,src_vocab_size)
+    tgt_embed=InputEmbedding(d_model,tgt_vocab_size)
+    #Creating positional Encoding
+    src_pos=PositionalEncoding(d_model,src_seq_len,dropout)
+    tgt_pos=PositionalEncoding(d_model,tgt_seq_len,dropout)
+    
+    #Creating encoder blocks
+    encoder_blocks=[]
+    for _ in range(N):
+        encoder_self_attention=MultiHeadAttentionBlock(d_model,h,dropout)
+        encoder_feed_forward=FeedForwardBlock(d_model,d_ff,dropout)
+        encoder_block=EncoderBlock(encoder_self_attention,encoder_feed_forward,dropout)
+        encoder_blocks.append(encoder_block)
+    
+    #Creating decoder blocks
+    decoder_blocks=[]
+    for _ in range(N):
+        decoder_self_attention=MultiHeadAttentionBlock(d_model,h,dropout)
+        decoder_cross_attention=MultiHeadAttentionBlock(d_model,h,dropout)
+        decoder_feed_forward=FeedForwardBlock(d_model,d_ff,dropout)
+        decoder_block=DecoderBlock(decoder_self_attention,decoder_cross_attention,decoder_feed_forward,dropout)
+        decoder_blocks.append(decoder_block)
+    
+    #creating encoder
+    encoder=Encoder(nn.ModuleList(encoder_blocks))
+    #creating decoder
+    decoder=Decoder(nn.ModuleList(decoder_blocks))
+    
+    proj_layer=Projection_layer(d_model,tgt_vocab_size)
+    transformer=Transformer(encoder,decoder,src_embed,tgt_embed,src_pos,tgt_pos,proj_layer)
+    
+    #Initialising parameters for faster training
+    for p in transformer.parameters():
+        if p.dim()>1:
+            nn.init.xavier_uniform_(p)
+            
+    return transformer

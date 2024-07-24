@@ -15,7 +15,7 @@ from tokenizers.pre_tokenizers import Whitespace
 from pathlib import Path
 
 from torch.utils.tensorboard import SummaryWriter
-import tqdm
+from tqdm import tqdm
  
 def get_all_sentences(ds,lang):
      for item in ds:
@@ -62,7 +62,7 @@ def get_ds(config):
     return train_dataloader,val_dataloader,tokenizer_src,tokenizer_tgt
 
 def get_model(config,vocab_src_len,vocab_tgt_len):
-    model=build_transformer(vocab_src_len,vocab_tgt_len,config["seq_len"],config["seq_len"])
+    model=build_transformer(src_vocab_size=vocab_src_len,tgt_vocab_size=vocab_tgt_len,src_seq_len=config["seq_len"],tgt_seq_len=config["seq_len"])
     return model
 
 def train_model(config):

@@ -4,7 +4,7 @@ import math
 
 class InputEmbedding(nn.Module):
 
-    def __init(self,d_model: int,vocab_size: int):
+    def __init__(self,d_model: int,vocab_size: int):
         super().__init__()
         self.d_model=d_model
         self.vocab_size=vocab_size
@@ -214,7 +214,7 @@ class Transformer(nn.Module):
     
     
 
-def build_transformer(self,src_vocab_size:int,tgt_vocab_size:int,src_seq_len:int,tgt_seq_len:int,d_model:int=512, N:int=6, h:int=8,dropout:int=0.1,d_ff=2048):
+def build_transformer(src_vocab_size:int,tgt_vocab_size:int,src_seq_len:int,tgt_seq_len:int,d_model:int=512, N:int=6, h:int=8,dropout:int=0.1,d_ff=2048):
     #Creating Embeddings
     src_embed=InputEmbedding(d_model,src_vocab_size)
     tgt_embed=InputEmbedding(d_model,tgt_vocab_size)

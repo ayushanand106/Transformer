@@ -60,3 +60,9 @@ def get_ds(config):
 def get_model(config,vocab_src_len,vocab_tgt_len):
     model=build_transformer(vocab_src_len,vocab_tgt_len,config["seq_len"],config["seq_len"])
     return model
+
+def train_model(config):
+    device="cuda"
+    Path(config["model_folder"]).mkdir(parent=True,exist_ok=True)
+    train_dataloader,val_dataloader,tokenizer_src,tokenizer_tgt=get_ds(config)
+    model=get_model(config,tokenizer_src.get_vocab_size(),,tokenizer_tgt.get_vocab_size())

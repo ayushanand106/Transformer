@@ -35,25 +35,26 @@ class BillingualDataset(Dataset):
             raise ValueError("Sentence too long")
         
         # Add SOS and EOS
-        enc_inp=torch.cat(
+        enc_inp=torch.cat((
             self.sos_token,
             torch.tensor(enc_inp_tokens,dtype=torch.int64),
             self.eos_token,
             torch.tensor([self.pad_token]*enc_num_padding_tokens,dtype=torch.int64)
-            
+        )
         )
         
-        dec_inp=torch.cat(
+        dec_inp=torch.cat((
             self.sos_token,
             torch.tensor(dec_inp_tokens,dtype=torch.int64),
             torch.tensor([self.pad_token]*dec_num_padding_tokens,dtype=torch.int64)
+        )
             
         )
-        label=torch.cat(
+        label=torch.cat((
             torch.tensor(dec_inp_tokens,dtype=torch.int64),
             self.eos_token,
             torch.tensor([self.pad_token]*dec_num_padding_tokens,dtype=torch.int64)
-            
+        )
         )
         assert enc_inp.size(0)==self.seq_len
         assert dec_inp.size(0)==self.seq_len

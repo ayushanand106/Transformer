@@ -19,7 +19,7 @@ import tqdm
  
 def get_all_sentences(ds,lang):
      for item in ds:
-         yield item["translations"][lang]
+         yield item["translation"][lang]
  
 def get_or_build_tokenizer(config,ds,lang):
     tokenizer_path=Path(config['tokenizer_file'].format(lang))
@@ -67,7 +67,7 @@ def get_model(config,vocab_src_len,vocab_tgt_len):
 
 def train_model(config):
     device="cuda"
-    Path(config["model_folder"]).mkdir(parent=True,exist_ok=True)
+    Path(config["model_folder"]).mkdir(parents=True,exist_ok=True)
     train_dataloader,val_dataloader,tokenizer_src,tokenizer_tgt=get_ds(config)
     model=get_model(config,tokenizer_src.get_vocab_size(),tokenizer_tgt.get_vocab_size()).to(device)
     
@@ -100,4 +100,41 @@ def train_model(config):
             decoder_mask=batch['decoder_mask'].to(device)  #(batch,1,seq_len,seq_len)
             
             encoder_output=model.encode(encoder_input,encoder_mask)
-            decoder_output=model.decode(encoder_output,encoder_mask,decoder_mask)
+            decoder_output=model.decode(encoder_output,encoder_mask,decoder_input,decoder_mask)
+            proj_output=model.project(decoder_output) #(batch,seq_len,tgt_vocab_size)
+            
+            label=batch["label"].to(device)#(batch,seq_len)
+            
+            #(batch,seq_len,tgt_vocab_size)->(batch*seq_len,tgt_vocab_size)
+            loss =loss_fn(proj_output.view(-1,tokenizer_tgt.get_vocab_size()),label.view(-1))
+            batch.iterator.set_postfix(f"loss:{loss.item():6.3f}")
+            
+            #log the loss
+            writer.add_scalar("train loss",loss.item(),global_step)
+            writer.flush()
+            
+            #Backpropagate loss
+            loss.backward()
+            
+            #update the weights
+            optimiser.step()
+            optimiser.zero_grad()
+            
+            global_step+=1
+        
+        #Save the model
+        model_filename=get_weights_file_path(config,f"{epoch:02d}")
+        torch.save({
+            'epoch':epoch,
+            'model_state_dict':model.state_dict(),
+            'optimiser_state_dict':optimiser.state_dict(),
+            'global_step':global_step
+        },model_filename)
+        
+        
+        
+if __name__=="__main__":
+    config=get_config()
+    train_model(config)
+            
+            

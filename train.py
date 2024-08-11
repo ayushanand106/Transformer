@@ -218,7 +218,15 @@ def train_model(config):
             optimizer.zero_grad(set_to_none=True)
 
             global_step += 1
-
+            model_filename = get_weights_file_path(config,"latest_weight.pth")
+            
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'global_step': global_step
+            }, model_filename)
+            
         if dist.get_rank() == 0:  # Only save from the main process
             run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
 

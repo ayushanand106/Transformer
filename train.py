@@ -1,10 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, random_split, DistributedSampler
-from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 import os
 from pathlib import Path
@@ -18,9 +14,6 @@ import torchmetrics
 from model import build_transformer
 from dataset import BilingualDataset, causal_mask
 from config import get_config, get_weights_file_path, latest_weights_file_path
-
-def setup_distributed():
-    dist.init_process_group(backend='nccl')  # Use 'nccl' for NVIDIA GPUs
 
 def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
@@ -43,7 +36,7 @@ def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
 
     return decoder_input.squeeze(0)
 
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, num_examples=2):
+def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, num_examples=2):
     model.eval()
     count = 0
     source_texts = []
@@ -82,21 +75,18 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
                 print_msg('-'*console_width)
                 break
 
-    if writer:
-        metric = torchmetrics.CharErrorRate()
-        cer = metric(predicted, expected)
-        writer.add_scalar('validation cer', cer, global_step)
-        writer.flush()
+    # Calculate and print metrics
+    metric = torchmetrics.CharErrorRate()
+    cer = metric(predicted, expected)
+    print(f'Character Error Rate: {cer:.4f}')
 
-        metric = torchmetrics.WordErrorRate()
-        wer = metric(predicted, expected)
-        writer.add_scalar('validation wer', wer, global_step)
-        writer.flush()
+    metric = torchmetrics.WordErrorRate()
+    wer = metric(predicted, expected)
+    print(f'Word Error Rate: {wer:.4f}')
 
-        metric = torchmetrics.BLEUScore()
-        bleu = metric(predicted, expected)
-        writer.add_scalar('validation BLEU', bleu, global_step)
-        writer.flush()
+    metric = torchmetrics.BLEUScore()
+    bleu = metric(predicted, expected)
+    print(f'BLEU Score: {bleu:.4f}')
 
 def get_all_sentences(ds, lang):
     for item in ds:
@@ -116,7 +106,7 @@ def get_or_build_tokenizer(config, ds, lang):
 
 def get_ds(config):
     ds_raw = load_dataset(f"{config['datasource']}", f"{config['lang_src']}-{config['lang_tgt']}", split='train')
-    ds_raw.select(range(5000))
+    ds_raw = ds_raw.select(range(5000))
 
     tokenizer_src = get_or_build_tokenizer(config, ds_raw, config['lang_src'])
     tokenizer_tgt = get_or_build_tokenizer(config, ds_raw, config['lang_tgt'])
@@ -143,11 +133,8 @@ def get_ds(config):
     print(f'Max length of source sentence: {max_len_src}')
     print(f'Max length of target sentence: {max_len_tgt}')
 
-    train_sampler = DistributedSampler(train_ds)
-    val_sampler = DistributedSampler(val_ds)
-
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], sampler=train_sampler)
-    val_dataloader = DataLoader(val_ds, batch_size=1, sampler=val_sampler)
+    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True)
+    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False)
 
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
 
@@ -156,19 +143,14 @@ def get_model(config, vocab_src_len, vocab_tgt_len):
     return model
 
 def train_model(config):
-    setup_distributed()  # Initialize distributed environment
-    local_rank = int(os.environ['LOCAL_RANK'])  # Get local rank from the environment
-    torch.cuda.set_device(local_rank)
-    device = torch.device("cuda", local_rank)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     Path(f"{config['datasource']}_{config['model_folder']}").mkdir(parents=True, exist_ok=True)
 
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
 
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
-    model = DDP(model, device_ids=[local_rank])  # Wrap the model with DDP
-
-    writer = SummaryWriter(config['experiment_name'])
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
     initial_epoch = 0
@@ -179,7 +161,7 @@ def train_model(config):
 
     if model_filename:
         print(f'Preloading model {model_filename}')
-        state = torch.load(model_filename)
+        state = torch.load(model_filename, map_location=device)
         model.load_state_dict(state['model_state_dict'])
         initial_epoch = state['epoch'] + 1
         optimizer.load_state_dict(state['optimizer_state_dict'])
@@ -193,7 +175,6 @@ def train_model(config):
         torch.cuda.empty_cache()
         model.train()
 
-        train_dataloader.sampler.set_epoch(epoch)  # Set epoch for sampler
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d}")
         for batch in batch_iterator:
             encoder_input = batch['encoder_input'].to(device)
@@ -201,42 +182,40 @@ def train_model(config):
             encoder_mask = batch['encoder_mask'].to(device)
             decoder_mask = batch['decoder_mask'].to(device)
 
-            encoder_output = model.module.encode(encoder_input, encoder_mask)
-            decoder_output = model.module.decode(encoder_output, encoder_mask, decoder_input, decoder_mask)
-            proj_output = model.module.project(decoder_output)
+            encoder_output = model.encode(encoder_input, encoder_mask)
+            decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask)
+            proj_output = model.project(decoder_output)
 
             label = batch['label'].to(device)
 
             loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 
-            writer.add_scalar('train loss', loss.item(), global_step)
-            writer.flush()
-
             loss.backward()
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
             global_step += 1
-            model_filename = get_weights_file_path(config,"latest_weight.pth")
-            
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'global_step': global_step
-            }, model_filename)
-            
-        if dist.get_rank() == 0:  # Only save from the main process
-            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
 
-            model_filename = get_weights_file_path(config,"latest_weight.pth")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'global_step': global_step
-            }, model_filename)
+        # Run validation and save model after each epoch
+        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg))
+
+        model_filename = get_weights_file_path(config, f"epoch_{epoch:02d}.pth")
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'global_step': global_step
+        }, model_filename)
+        
+        # Also save as latest
+        latest_filename = get_weights_file_path(config, "latest_weight.pth")
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'global_step': global_step
+        }, latest_filename)
 
 if __name__ == '__main__':
     config = get_config()
